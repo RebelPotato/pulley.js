@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "declaration": true,
+    "target": "ES2019",
+    "module": "ESNext",
+    "rootDir": "src",
+    "outDir": "dist",
+    "lib": ["ES6"],
+  },
+  "include": [
+    "src/**/*"
+  ]
+}
