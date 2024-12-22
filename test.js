@@ -1,4 +1,16 @@
-import { make, toStream, embed, map, fold, filter, asRef, flatmap, take } from "./dist/pulley.js";
+import {
+  make,
+  toStream,
+  embed,
+  map,
+  fold,
+  filter,
+  asRef,
+  flatmap,
+  take,
+  unfold,
+  forEach,
+} from "./dist/pulley.js";
 
 function h(tag, props, children = []) {
   const elem = document.createElement(tag);
@@ -42,62 +54,120 @@ function f(str) {
 const pipe = (x, ...fns) => fns.reduce((v, f) => f(v), x);
 
 // testing
-const test1 = {
-  expect: () => pipe(
-    [1, 2, 3],
-    embed,
-    toStream,
-    fold(f(`$0 + $1`), `0`)
-  ),
-  toBe: 6,
-}
-const test2 = {
-  expect: () => pipe(
-    [1, 2, 3],
-    asRef,
-    toStream,
-    map(f(`Math.floor($0 / 2)`)),
-    fold(f(`$0 + $1`), `0`)
-  ),
-  toBe: 2,
-}
-const test3 = {
-  expect: () => pipe(
-    [1, 2, 3, 4],
-    embed,
-    toStream,
-    filter(f(`$0 % 2 === 0`)),
-    map(f(`$0 * $0`)),
-    fold(f(`$0 + $1`), `0`)
-  ),
-  toBe: 20,
-}
-const test4 = {
-  expect: () => pipe(
-    [0,1,2,3,4,5,6,7],
-    embed,
-    toStream,
-    filter(f(`$0 % 2 === 0`)),
-    take(2),
-    map(f(`$0 * $0`)),
-    fold(f(`$0 + $1`), `0`)
-  ),
-  toBe: 20,
-}
-const test5 = {
-  expect: () => pipe(
-    [0,1,2,3,4,5],
-    embed,
-    toStream,
-    filter(f(`$0 % 2 === 0`)),
-    flatmap(x => toStream(`[${x}, ${x} + 1, ${x} + 2]`)),
-    fold(f(`($0.push($1), $0)`), `[]`),
-  ),
-  toBe: [0, 1, 2, 2, 3, 4, 4, 5, 6],
-}
+const iota = (n) => unfold((x) => `[${x}, ${x} + 1]`, n);
+const tests = [
+  {
+    expect: () => pipe([1, 2, 3], embed, toStream, fold(f(`$0 + $1`), `0`)),
+    toBe: 6,
+  },
+  {
+    expect: () =>
+      pipe(
+        [1, 2, 3],
+        asRef,
+        toStream,
+        map(f(`Math.floor($0 / 2)`)),
+        fold(f(`$0 + $1`), `0`)
+      ),
+    toBe: 2,
+  },
+  {
+    expect: () =>
+      pipe(
+        [1, 2, 3, 4],
+        embed,
+        toStream,
+        filter(f(`$0 % 2 === 0`)),
+        map(f(`$0 * $0`)),
+        fold(f(`$0 + $1`), `0`)
+      ),
+    toBe: 20,
+  },
+  {
+    expect: () =>
+      pipe(
+        [0, 1, 2, 3, 4, 5, 6, 7],
+        embed,
+        toStream,
+        filter(f(`$0 % 2 === 0`)),
+        take(2),
+        map(f(`$0 * $0`)),
+        fold(f(`$0 + $1`), `0`)
+      ),
+    toBe: 4,
+  },
+  {
+    expect: () =>
+      pipe(
+        [0, 1, 2, 3, 4, 5],
+        embed,
+        toStream,
+        filter(f(`$0 % 2 === 0`)),
+        flatmap((x) => toStream(`[${x}, ${x} + 1, ${x} + 2]`)),
+        fold(f(`($0.push($1), $0)`), `[]`)
+      ),
+    toBe: [0, 1, 2, 2, 3, 4, 4, 5, 6],
+  },
+  {
+    expect: () =>
+      pipe(
+        iota(1),
+        flatmap(iota),
+        filter(f(`$0 % 2 === 0`)),
+        take(10),
+        fold(f(`($0.push($1), $0)`), `[]`)
+      ),
+    toBe: [2, 4, 6, 8, 10, 12, 14, 16, 18, 20],
+  },
+  {
+    expect: () =>
+      pipe(
+        iota(1),
+        flatmap((x) => take(3)(iota(`${x} + 1`))),
+        filter(f(`$0 % 2 === 0`)),
+        take(10),
+        fold(f(`($0.push($1), $0)`), `[]`)
+      ),
+    toBe: [2, 4, 4, 4, 6, 6, 6, 8, 8, 8],
+  },
+  {
+    expect: () =>
+      pipe(
+        iota(1),
+        flatmap((x) =>
+          pipe(
+            iota(`${x} * 1`),
+            flatmap((x) => iota(`${x} * 2`)),
+            take(3)
+          )
+        ),
+        take(10),
+        fold(f(`($0.push($1), $0)`), `[]`)
+      ),
+    toBe: [2, 3, 4, 4, 5, 6, 6, 7, 8, 8],
+  },
+  {
+    expect: () =>
+      pipe(
+        iota(1),
+        flatmap((x) =>
+          pipe(
+            iota(`${x} + 10`),
+            flatmap((x) => toStream(`[${x} + 100, ${x} + 200]`)),
+            filter(f(`$0 % 3 === 0`)),
+            take(3)
+          )
+        ),
+        filter(f(`$0 % 2 === 0`)),
+        take(10),
+        fold(f(`($0.push($1), $0)`), `[]`)
+      ),
+    toBe: [114, 114, 216, 114, 216, 114, 216, 216, 216, 120],
+  },
+];
 
-const boptions = { indent_size: 2, space_in_empty_paren: true }
-const format = (code) => js_beautify(code, boptions);
+const format = (code) =>
+  js_beautify(code, { indent_size: 2, space_in_empty_paren: true });
 function match(a, b) {
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
@@ -108,12 +178,11 @@ function match(a, b) {
   }
   return a === b;
 }
-const tests = [test1, test2, test3, test4, test5];
 const results = [];
 for (let i = 0; i < tests.length; i++) {
   const test = tests[i];
   const code = test.expect.toString();
-  const tested = make(test.expect);
+  const tested = make(test.expect.length, test.expect);
   const generated = tested.body.toString();
   const expected = test.toBe;
   let result, passed;
@@ -126,13 +195,18 @@ for (let i = 0; i < tests.length; i++) {
   }
   results.push({ code, generated, result, expected, passed });
   const elem = h("section", {}, [
-    h("h2", {}, [`Test ${i + 1}`]),
-    h("p", { style: { color: passed ? "green" : "red" } }, [passed ? "Passed" : "Failed"]),
+    h("h2", { style: { color: passed ? "green" : "red" } }, [
+      `Test ${i + 1} : `,
+      passed ? "Passed" : "Failed",
+    ]),
     h("h3", {}, ["Code"]),
     h("pre", {}, [format(code)]),
     h("h3", {}, ["Generated"]),
     h("pre", {}, [format(generated)]),
-    h("p", {}, [`Expected: ${expected}, got: ${result}`]),
+    h("p", {}, [
+      passed ? undefined : `expected: ${expected}, `,
+      `got: ${result}`,
+    ]),
   ]);
   document.body.appendChild(elem);
 }
