@@ -73,6 +73,11 @@ function For(init, bound, index) {
             return init((sp) => for_loop(i, bound(sp), index(sp, i, consumer)));
         },
         map_raw: (tr) => For(init, bound, (s, i, k) => index(s, i, (e) => tr(e, k))),
+        add_to_producer: (newTerm) => obj.to_unfold().add_to_producer(newTerm),
+        take_raw: (n) => {
+            const nbound = (s) => `Math.min(${n}-1, ${bound(s)})`;
+            return For(init, nbound, index);
+        }
     };
     return Object.freeze(obj);
 }
@@ -89,13 +94,26 @@ function Unfold(init, term, card, step) {
             return init((sp) => while_loop(term(sp), step(sp, consumer)));
         },
         map_raw: (tr) => Unfold(init, term, card, (s, k) => step(s, (e) => tr(e, k))),
+        add_to_producer: (newTerm) => {
+            if (card === Card.AtMostOne)
+                return obj;
+            const nterm = (s) => `${newTerm} && ${term(s)}`;
+            return Unfold(init, nterm, Card.Many, step);
+        },
+        add_nr: (n) => {
+            const ninit = (k) => init((s) => {
+                const nr = mkVar("nr");
+                return `let ${nr} = ${n}; ${k([nr, s])}`;
+            });
+            return Unfold(ninit, ([nr, s]) => card === Card.AtMostOne
+                ? term(s)
+                : `${nr} >= 0 && ${term(s)}`, card, ([nr, s], k) => step(s, el => k([nr, el])));
+        },
+        take_raw: (n) => obj.add_nr(n).map_raw(([nr, a], k) => `${nr} --; ${k(a)}`),
     };
     return Object.freeze(obj);
 }
 // Helper functions
-function to_unfold(prod) {
-    return prod.to_unfold();
-}
 function toStream(arr) {
     const init = (k) => const_init(arr, k);
     const bound = (arr) => `(${arr}).length - 1`;
@@ -147,7 +165,7 @@ function flatmap_raw(tr, stream) {
         Nested: (outer, step) => Nested(outer, (a) => flatmap_raw(tr, step(a))),
     });
 }
-const flatmap = flatmap_raw;
+const flatmap = (tr) => (stream) => flatmap_raw(tr, stream);
 function filter(f) {
     return (stream) => {
         const filter_stream = (a) => Unfold(k => k(a), f, Card.AtMostOne, (a, k) => k(a));
@@ -176,4 +194,17 @@ function make(code) {
         run: (...args) => body(args, refs),
     };
 }
-export { toStream, map, fold, to_unfold, unfold, flatmap, filter, embed, asRef, make };
+function addTermination(newTerm, stream) {
+    return stream.match({
+        Linear: (prod) => Linear(prod.add_to_producer(newTerm)),
+        Nested: (outer, step) => Nested(outer.add_to_producer(newTerm), (a) => addTermination(newTerm, step(a))),
+    });
+}
+function take_raw(n, stream) {
+    return stream.match({
+        Linear: (prod) => Linear(prod.take_raw(n)),
+        Nested: (outer, step) => Nested(outer.to_unfold().add_nr(n), ([nr, a]) => map_raw((a, k) => `${nr} --; ${k(a)}`, addTermination(`${nr} > 0`, step(a)))),
+    });
+}
+const take = (n) => (stream) => take_raw(n, stream);
+export { toStream, map, fold, unfold, flatmap, filter, take, embed, asRef, make };

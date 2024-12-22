@@ -1,4 +1,4 @@
-import { make, toStream, embed, map, fold, filter, asRef } from "./dist/pulley.js";
+import { make, toStream, embed, map, fold, filter, asRef, flatmap, take } from "./dist/pulley.js";
 
 function h(tag, props, children = []) {
   const elem = document.createElement(tag);
@@ -72,18 +72,58 @@ const test3 = {
   ),
   toBe: 20,
 }
+const test4 = {
+  expect: () => pipe(
+    [0,1,2,3,4,5,6,7],
+    embed,
+    toStream,
+    filter(f(`$0 % 2 === 0`)),
+    take(2),
+    map(f(`$0 * $0`)),
+    fold(f(`$0 + $1`), `0`)
+  ),
+  toBe: 20,
+}
+const test5 = {
+  expect: () => pipe(
+    [0,1,2,3,4,5],
+    embed,
+    toStream,
+    filter(f(`$0 % 2 === 0`)),
+    flatmap(x => toStream(`[${x}, ${x} + 1, ${x} + 2]`)),
+    fold(f(`($0.push($1), $0)`), `[]`),
+  ),
+  toBe: [0, 1, 2, 2, 3, 4, 4, 5, 6],
+}
+
 const boptions = { indent_size: 2, space_in_empty_paren: true }
 const format = (code) => js_beautify(code, boptions);
-const tests = [test1, test2, test3];
+function match(a, b) {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!match(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  return a === b;
+}
+const tests = [test1, test2, test3, test4, test5];
 const results = [];
 for (let i = 0; i < tests.length; i++) {
   const test = tests[i];
   const code = test.expect.toString();
   const tested = make(test.expect);
   const generated = tested.body.toString();
-  const result = tested.run();
   const expected = test.toBe;
-  const passed = result === expected;
+  let result, passed;
+  try {
+    result = tested.run();
+    passed = match(result, expected);
+  } catch (e) {
+    console.error(e);
+    passed = false;
+  }
   results.push({ code, generated, result, expected, passed });
   const elem = h("section", {}, [
     h("h2", {}, [`Test ${i + 1}`]),

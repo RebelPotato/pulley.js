@@ -16,6 +16,8 @@ interface For<A, S> extends Init<S> {
   to_unfold: () => Unfold<A, [Code<number>, S]>,
   fold_raw: (consumer: (a: A) => Code<Unit>) => Code<Unit>,
   map_raw: <B>(tr: (a: A, k: (s: B) => Code<Unit>) => Code<Unit>) => For<B, S>,
+  add_to_producer: (newTerm: Code<boolean>) => Unfold<A, [Code<number>, S]>,
+  take_raw: (n: Code<number>) => For<A, S>,
 }
 interface Unfold<A, S> extends Init<S> {
   term: (arr: S) => Code<boolean>,
@@ -24,19 +26,22 @@ interface Unfold<A, S> extends Init<S> {
   to_unfold: () => Unfold<A, S>,
   fold_raw: (consumer: (a: A) => Code<Unit>) => Code<Unit>,
   map_raw: <B>(tr: (a: A, k: (s: B) => Code<Unit>) => Code<Unit>) => Unfold<B, S>,
+  add_to_producer: (newTerm: Code<boolean>) => Unfold<A, S>,
+  add_nr: (n: Code<number>) => Unfold<[Code<number>, A], [Code<number>, S]>,
+  take_raw: (n: Code<number>) => Unfold<A, [Code<number>, S]>,
 }
 type Producer<A, S> = For<A, S> | Unfold<A, S>
 interface Linear<A> {
   prod: Producer<A, any>,
   match: <R>(opts: {
-    "Linear": <S>(producer: Producer<A, S>) => R
+    "Linear": (producer: Producer<A, any>) => R
   }) => R,
 }
 interface Nested<A> {
   outer: Producer<any, any>,
   step: (a: any) => StStream<A>,
   match: <R>(opts: {
-    "Nested": <B, S>(outer: Producer<B, S>, step: (state: B) => StStream<A>) => R
+    "Nested": <B>(outer: Producer<B, any>, step: (state: B) => StStream<A>) => R
   }) => R,
 }
 type StStream<A> = Linear<A> | Nested<A>
@@ -56,7 +61,7 @@ function mkVar(name: string): Code<any> {
 }
 
 // Stream constructors
-function Linear<A, S>(prod: Producer<A, S>): Linear<A> {
+function Linear<A>(prod: Producer<A, any>): Linear<A> {
   const obj: Linear<A> = {
     prod,
     match: (opts) => opts.Linear(prod),
@@ -64,7 +69,7 @@ function Linear<A, S>(prod: Producer<A, S>): Linear<A> {
   return Object.freeze(obj);
 }
 
-function Nested<A, B, S>(outer: Producer<B, S>, step: (a: B) => StStream<A>): Nested<A> {
+function Nested<A, B>(outer: Producer<B, any>, step: (a: B) => StStream<A>): Nested<A> {
   const obj: Nested<A> = {
     outer,
     step,
@@ -130,6 +135,11 @@ function For<A, S>(
     },
     map_raw: (tr) =>
       For(init, bound, (s, i, k) => index(s, i, (e) => tr(e, k))),
+    add_to_producer: (newTerm) => obj.to_unfold().add_to_producer(newTerm),
+    take_raw: (n) => {
+      const nbound = (s: S) => `Math.min(${n}-1, ${bound(s)})` as Code<number>;
+      return For(init, nbound, index);
+    }
   };
   return Object.freeze(obj);
 }
@@ -153,15 +163,33 @@ function Unfold<A, S>(
     },
     map_raw: (tr) =>
       Unfold(init, term, card, (s, k) => step(s, (e) => tr(e, k))),
+    add_to_producer: (newTerm) => {
+      if (card === Card.AtMostOne) return obj;
+      const nterm = (s: S) => `${newTerm} && ${term(s)}` as Code<boolean>;
+      return Unfold(init, nterm, Card.Many, step);
+    },
+    add_nr: (n: Code<number>) => {
+      const ninit = <W>(k: (s: [Code<number>, S]) => Code<W>) => init((s: S) => {
+        const nr = mkVar("nr");
+        return `let ${nr} = ${n}; ${k([nr, s])}` as Code<W>;
+      });
+      return Unfold(
+        ninit,
+        ([nr, s]: [Code<number>, S]) =>
+          card === Card.AtMostOne
+            ? term(s)
+            : `${nr} >= 0 && ${term(s)}` as Code<boolean>,
+        card,
+        ([nr, s]: [Code<number>, S], k: (s: [Code<number>, A]) => Code<Unit>) =>
+          step(s, el => k([nr, el]))
+      );
+    },
+    take_raw: (n) => obj.add_nr(n).map_raw(([nr, a], k) => `${nr} --; ${k(a)}` as Code<Unit>),
   };
   return Object.freeze(obj);
 }
 
 // Helper functions
-function to_unfold<A, S0>(prod: Producer<A, S0>) {
-  return prod.to_unfold();
-}
-
 function toStream<A>(arr: Code<A[]>): Stream<A[]> {
   const init = <W>(k: (s: Code<A[]>) => Code<W>): Code<W> => const_init(arr, k);
   const bound = (arr: Code<A[]>) => `(${arr}).length - 1` as Code<number>;
@@ -242,7 +270,7 @@ function flatmap_raw<A, B>(
     Nested: (outer, step) => Nested(outer, (a) => flatmap_raw(tr, step(a))),
   });
 }
-const flatmap = flatmap_raw;
+const flatmap = <A, B>(tr: (a: A) => StStream<B>) => (stream: StStream<A>) => flatmap_raw(tr, stream);
 
 function filter<A>(f: (x: Code<A>) => Code<boolean>) {
   return (stream: Stream<A>) => {
@@ -276,4 +304,25 @@ function make<A>(code: () => Code<A>) {
   }
 }
 
-export { toStream, map, fold, to_unfold, unfold, flatmap, filter, embed, asRef, make };
+function addTermination<A>(newTerm: Code<boolean>, stream: StStream<A>): StStream<A> {
+  return stream.match({
+    Linear: (prod) => Linear(prod.add_to_producer(newTerm)) as StStream<A>,
+    Nested: (outer, step) => Nested(outer.add_to_producer(newTerm), (a) => addTermination(newTerm, step(a))),
+  });
+}
+
+function take_raw<A>(n: Code<number>, stream: StStream<A>): StStream<A> {
+  return stream.match({
+    Linear: (prod) => Linear(prod.take_raw(n)) as StStream<A>,
+    Nested: (outer, step) => Nested(
+      outer.to_unfold().add_nr(n), 
+      ([nr, a]) => map_raw(
+        (a, k) => `${nr} --; ${k(a)}` as Code<Unit>,
+        addTermination(`${nr} > 0` as Code<boolean>, step(a))
+      )
+    ),
+  });
+}
+const take = <A>(n: Code<number>) => (stream: StStream<A>) => take_raw(n, stream);
+
+export { toStream, map, fold, unfold, flatmap, filter, take, embed, asRef, make };

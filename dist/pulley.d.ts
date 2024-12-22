@@ -1,1 +1,1 @@
-export { toStream, to_unfold, unfold, fold, map, flatmap, filter, embed, asRef, make } from "./stream.js";
+export { toStream, unfold, fold, map, flatmap, filter, take, embed, asRef, make } from "./stream.js";
