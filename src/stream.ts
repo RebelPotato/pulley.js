@@ -7,60 +7,45 @@ type Unit = undefined
 declare const __nominal__type: unique symbol;
 type Code<A> = string & { readonly [__nominal__type]: A; }
 
-interface Init<S> {
+type MatchFor<A, R> = <S>(
   init: <W>(k: (s: S) => Code<W>) => Code<W>,
-}
-interface For<A, S> extends Init<S> {
   bound: (arr: S) => Code<number>,
-  index: (arr: S, i: Code<number>, k: (a: A) => Code<Unit>) => Code<Unit>,
-  to_unfold: () => Unfold<A, [Code<number>, S]>,
-  fold_raw: (consumer: (a: A) => Code<Unit>) => Code<Unit>,
-  map_raw: <B>(tr: (a: A, k: (s: B) => Code<Unit>) => Code<Unit>) => For<B, S>,
-  add_to_producer: (newTerm: Code<boolean>) => Unfold<A, [Code<number>, S]>,
-  take_raw: (n: Code<number>) => For<A, S>,
+  index: (arr: S, i: Code<number>, k: (a: A) => Code<Unit>) => Code<Unit>
+) => R
+interface For<A> {
   match: <R>(opts: {
-    "For": (
-      init: <W>(k: (s: S) => Code<W>) => Code<W>,
-      bound: (arr: S) => Code<number>,
-      index: (arr: S, i: Code<number>, k: (a: A) => Code<Unit>) => Code<Unit>
-    ) => R
+    "For": MatchFor<A, R>
   }) => R,
 }
-interface Unfold<A, S> extends Init<S> {
+type MatchUnfold<A, R> = <S>(
+  init: <W>(k: (s: S) => Code<W>) => Code<W>,
   term: (arr: S) => Code<boolean>,
   card: Card,
-  step: (arr: S, k: (a: A) => Code<Unit>) => Code<Unit>,
-  to_unfold: () => Unfold<A, S>,
-  fold_raw: (consumer: (a: A) => Code<Unit>) => Code<Unit>,
-  map_raw: <B>(tr: (a: A, k: (s: B) => Code<Unit>) => Code<Unit>) => Unfold<B, S>,
-  add_to_producer: (newTerm: Code<boolean>) => Unfold<A, S>,
-  add_nr: (n: Code<number>) => Unfold<[Code<number>, A], [Code<number>, S]>,
-  take_raw: (n: Code<number>) => Unfold<A, [Code<number>, S]>,
+  step: (arr: S, k: (a: A) => Code<Unit>) => Code<Unit>
+) => R
+interface Unfold<A> {
   match: <R>(opts: {
-    "Unfold": (
-      init: <W>(k: (s: S) => Code<W>) => Code<W>,
-      term: (arr: S) => Code<boolean>,
-      card: Card,
-      step: (arr: S, k: (a: A) => Code<Unit>) => Code<Unit>
-    ) => R
+    "Unfold": MatchUnfold<A, R>
   }) => R,
 }
-type Producer<A, S> = For<A, S> | Unfold<A, S>
+type Producer<A> = For<A> | Unfold<A>
+
+type MatchLinear<A, R> = (producer: Producer<A>) => R
 interface Linear<A> {
-  prod: Producer<A, any>,
   match: <R>(opts: {
-    "Linear": (producer: Producer<A, any>) => R
+    "Linear": MatchLinear<A, R>
   }) => R,
 }
+type MatchNested<A, R> = <B>(
+  outer: Producer<B>,
+  step: (state: B) => StStream<A>
+) => R
 interface Nested<A> {
-  outer: Producer<any, any>,
-  step: (a: any) => StStream<A>,
   match: <R>(opts: {
-    "Nested": <B>(outer: Producer<B, any>, step: (state: B) => StStream<A>) => R
+    "Nested": MatchNested<A, R>
   }) => R,
 }
 type StStream<A> = Linear<A> | Nested<A>
-
 type Stream<A> = StStream<Code<A>>
 
 // Counter for variable names
@@ -76,19 +61,19 @@ function mkVar(name: string): Code<any> {
 }
 
 // Stream constructors
-function Linear<A>(prod: Producer<A, any>): Linear<A> {
-  const obj: Linear<A> = {
+function Linear<A>(prod: Producer<A>): Linear<A> {
+  const obj = {
     prod,
-    match: (opts) => opts.Linear(prod),
+    match: <R>(opts: { Linear: MatchLinear<A, R> }) => opts.Linear(prod),
   };
   return Object.freeze(obj);
 }
 
-function Nested<A, B>(outer: Producer<B, any>, step: (a: B) => StStream<A>): Nested<A> {
-  const obj: Nested<A> = {
+function Nested<A, B>(outer: Producer<B>, step: (a: B) => StStream<A>): Nested<A> {
+  const obj = {
     outer,
     step,
-    match: (opts) => opts.Nested(outer, step),
+    match: <R>(opts: { Nested: MatchNested<A, R> }) => opts.Nested(outer, step),
   };
   return Object.freeze(obj);
 }
@@ -101,7 +86,7 @@ function var_init0<S, W>(k: (s: [Code<number>, S]) => Code<W>): (s0: S) => Code<
   };
 }
 
-function var_initU<S, W>(k: (s: Code<S | undefined>) => Code<W>, initial: Code<S | undefined>): Code<W> {
+function var_initU<S, W>(k: (s: Code<S>) => Code<W>, initial: Code<S>): Code<W> {
   const s = mkVar("s");
   return `let ${s} = ${initial}; ${k(s)}` as Code<W>;
 }
@@ -129,79 +114,35 @@ function const_init<A, W>(arr: Code<A[]>, k: (s: Code<A[]>) => Code<W>) {
 
 // Producers
 function For<A, S>(
-  init: For<A, S>["init"],
-  bound: For<A, S>["bound"],
-  index: For<A, S>["index"]
-): For<A, S> {
-  const obj: For<A, S> = {
+  init: <W>(k: (s: S) => Code<W>) => Code<W>,
+  bound: (arr: S) => Code<number>,
+  index: (arr: S, i: Code<number>, k: (a: A) => Code<Unit>) => Code<Unit>
+): For<A> {
+  const obj = {
     init,
     bound,
     index,
-    match: (opts) => opts.For(init, bound, index),
-    to_unfold: () => {
-      const uinit = <W>(k: (s: [Code<number>, S]) => Code<W>) => init(var_init0(k));
-      const term = ([i, s0]: [Code<number>, S]) => `${i} <= ${bound(s0)}` as Code<boolean>;
-      const step = ([i, s0]: [Code<number>, S], k: (a: A) => Code<Unit>) =>
-        index(s0, i, (a) => var_inc(i, k(a)));
-      return Unfold(uinit, term, Card.Many, step);
-    },
-    fold_raw: (consumer) => {
-      const i = mkVar("i");
-      return init((sp) => for_loop(i, bound(sp), index(sp, i, consumer)));
-    },
-    map_raw: (tr) =>
-      For(init, bound, (s, i, k) => index(s, i, (e) => tr(e, k))),
-    add_to_producer: (newTerm) => obj.to_unfold().add_to_producer(newTerm),
-    take_raw: (n) => {
-      const nbound = (s: S) => `Math.min(${n}-1, ${bound(s)})` as Code<number>;
-      return For(init, nbound, index);
-    }
+    match: <R>(opts: { For: MatchFor<A, R> }) => opts.For(init, bound, index),
+    // take_raw: (n) => {
+    //   const nbound = (s: S) => `Math.min(${n}-1, ${bound(s)})` as Code<number>;
+    //   return For(init, nbound, index);
+    // }
   };
   return Object.freeze(obj);
 }
 
 function Unfold<A, S>(
-  init: Unfold<A, S>["init"],
-  term: Unfold<A, S>["term"],
-  card: Unfold<A, S>["card"],
-  step: Unfold<A, S>["step"]
-): Unfold<A, S> {
-  const obj: Unfold<A, S> = {
+  init: <W>(k: (s: S) => Code<W>) => Code<W>,
+  term: (arr: S) => Code<boolean>,
+  card: Card,
+  step: (arr: S, k: (a: A) => Code<Unit>) => Code<Unit>
+): Unfold<A> {
+  const obj = {
     init,
     term,
     card,
     step,
-    match: (opts) => opts.Unfold(init, term, card, step),
-    to_unfold: () => obj,
-    fold_raw: (consumer) => {
-      if (card === Card.AtMostOne)
-        return init((sp) => if_loop(term(sp), step(sp, consumer)));
-      return init((sp) => while_loop(term(sp), step(sp, consumer)));
-    },
-    map_raw: (tr) =>
-      Unfold(init, term, card, (s, k) => step(s, (e) => tr(e, k))),
-    add_to_producer: (newTerm) => {
-      if (card === Card.AtMostOne) return obj;
-      const nterm = (s: S) => `${newTerm} && ${term(s)}` as Code<boolean>;
-      return Unfold(init, nterm, Card.Many, step);
-    },
-    add_nr: (n: Code<number>) => {
-      const ninit = <W>(k: (s: [Code<number>, S]) => Code<W>) => init((s: S) => {
-        const nr = mkVar("nr");
-        return `let ${nr} = ${n}; ${k([nr, s])}` as Code<W>;
-      });
-      return Unfold(
-        ninit,
-        ([nr, s]: [Code<number>, S]) =>
-          card === Card.AtMostOne
-            ? term(s)
-            : `${nr} > 0 && ${term(s)}` as Code<boolean>,
-        card,
-        ([nr, s]: [Code<number>, S], k: (s: [Code<number>, A]) => Code<Unit>) =>
-          step(s, el => k([nr, el]))
-      );
-    },
-    take_raw: (n) => obj.add_nr(n).map_raw(([nr, a], k) => `${nr} -= 1; ${k(a)}` as Code<Unit>),
+    match: <R>(opts: { Unfold: MatchUnfold<A, R> }) => opts.Unfold(init, term, card, step),
   };
   return Object.freeze(obj);
 }
@@ -238,7 +179,17 @@ function unfold<A, Z>(
 // Consumers
 function fold_raw<A>(consumer: (a: A) => Code<Unit>, stream: StStream<A>): Code<Unit> {
   return stream.match({
-    Linear: (prod) => prod.fold_raw(consumer),
+    Linear: (prod) => prod.match({
+      For: (init, bound, index) => {
+        const i = mkVar("i");
+        return init((sp) => for_loop(i, bound(sp), index(sp, i, consumer)));
+      },
+      Unfold: (init, term, card, step) => {
+        if (card === Card.AtMostOne)
+          return init((sp) => if_loop(term(sp), step(sp, consumer)));
+        return init((sp) => while_loop(term(sp), step(sp, consumer)));
+      },
+    }),
     Nested: (outer, step) =>
       fold_raw((e) => fold_raw(consumer, step(e)), Linear(outer)),
   });
@@ -265,7 +216,12 @@ function map_raw<A, B>(
   stream: StStream<A>
 ): StStream<B> {
   return stream.match({
-    Linear: (prod) => Linear(prod.map_raw(tr)) as StStream<B>,
+    Linear: (prod) => Linear(prod.match({
+      For: (init, bound, index) =>
+        For(init, bound, (s, i, k) => index(s, i, (e) => tr(e, k))) as Producer<B>,
+      Unfold: (init, term, card, step) =>
+        Unfold(init, term, card, (s, k) => step(s, (e) => tr(e, k))),
+    })) as StStream<B>,
     Nested: (outer, step) => Nested(outer, (a) => map_raw(tr, step(a))),
   });
 }
@@ -289,60 +245,121 @@ function flatmap_raw<A, B>(
     Nested: (outer, step) => Nested(outer, (a) => flatmap_raw(tr, step(a))),
   });
 }
-const flatmap = <A, B>(tr: (a: A) => StStream<B>) => (stream: StStream<A>) => flatmap_raw(tr, stream);
+const flatmap = <A, B>(tr: (a: Code<A>) => Stream<B>) => (stream: Stream<A>) => flatmap_raw(tr, stream);
 
 function filter<A>(f: (x: Code<A>) => Code<boolean>) {
-  return (stream: Stream<A>) => {
-    const filter_stream = (a: Code<A>) => Unfold(k => k(a), f, Card.AtMostOne, (a, k) => k(a));
+  return (stream: Stream<A>): Stream<A> => {
+    const filter_stream = (a: Code<A>): Unfold<Code<A>> => Unfold(k => k(a), f, Card.AtMostOne, (a, k) => k(a));
     return flatmap_raw((a) => Linear(filter_stream(a)), stream);
   };
 }
 
+function to_unfold<A>(prod: Producer<A>): Unfold<A> {
+  return prod.match({
+    For: <S>(
+      init: <W>(k: (s: S) => Code<W>) => Code<W>,
+      bound: (arr: S) => Code<number>,
+      index: (arr: S, i: Code<number>, k: (a: A) => Code<Unit>) => Code<Unit>
+    ) =>
+      Unfold(
+        (k) => init(var_init0(k)),
+        ([i, s0]: [Code<number>, S]) => `${i} <= ${bound(s0)}` as Code<boolean>,
+        Card.Many,
+        ([i, s0]: [Code<number>, S], k) => index(s0, i, (a) => var_inc(i, k(a)))
+      ),
+    Unfold: () => prod as Unfold<A>,
+  });
+}
+
+function add_to_producer<A>(newTerm: Code<boolean>, prod: Producer<A>): Producer<A> {
+  return prod.match({
+    For: () => add_to_producer(newTerm, to_unfold(prod)),
+    Unfold: (init, term, card, step) => {
+      if (card === Card.AtMostOne) return prod;
+      return Unfold(init, (s) => `${newTerm} && ${term(s)}` as Code<boolean>, Card.Many, step);
+    },
+  });
+}
+
 function addTermination<A>(newTerm: Code<boolean>, stream: StStream<A>): StStream<A> {
   return stream.match({
-    Linear: (prod) => Linear(prod.add_to_producer(newTerm)) as StStream<A>,
-    Nested: (outer, step) => Nested(outer.add_to_producer(newTerm), (a) => addTermination(newTerm, step(a))),
+    Linear: (prod) => Linear(add_to_producer(newTerm, prod)) as StStream<A>,
+    Nested: (outer, step) => Nested(add_to_producer(newTerm, outer), (a) => addTermination(newTerm, step(a))),
   });
+}
+
+function add_nr<A, S>(
+  n: Code<number>,
+  init: <W>(k: (s: S) => Code<W>) => Code<W>,
+  term: (arr: S) => Code<boolean>,
+  card: Card,
+  step: (arr: S, k: (a: A) => Code<Unit>) => Code<Unit>
+): Unfold<[Code<number>, A]> {
+  const ninit = <W>(k: (s: [Code<number>, S]) => Code<W>) => init((s: S) => {
+    const nr = mkVar("nr");
+    return `let ${nr} = ${n}; ${k([nr, s])}` as Code<W>;
+  });
+  return Unfold(
+    ninit,
+    ([nr, s]: [Code<number>, S]) =>
+      card === Card.AtMostOne
+        ? term(s)
+        : `${nr} > 0 && ${term(s)}` as Code<boolean>,
+    card,
+    ([nr, s]: [Code<number>, S], k: (s: [Code<number>, A]) => Code<Unit>) =>
+      step(s, el => k([nr, el]))
+  );
 }
 
 function take_raw<A>(n: Code<number>, stream: StStream<A>): StStream<A> {
   return stream.match({
-    Linear: (prod) => Linear(prod.take_raw(n)) as StStream<A>,
-    Nested: (outer, step) => Nested(
-      outer.to_unfold().add_nr(n),
-      ([nr, a]) => map_raw(
-        (a, k) => `${nr} -= 1; ${k(a)}` as Code<Unit>,
-        addTermination(`${nr} > 0` as Code<boolean>, step(a))
-      )
-    ),
+    Linear: (prod) => prod.match({
+      For: (init, bound, index) =>
+        Linear(For(init, (s) => `Math.min(${n}-1, ${bound(s)})` as Code<number>, index)) as StStream<A>,
+      Unfold: (init, term, card, step) =>
+        map_raw(
+          ([nr, a], k) => `${nr} -= 1; ${k(a)}` as Code<Unit>,
+          Linear(add_nr(n, init, term, card, step))
+        )
+    }),
+    Nested: (outer, step) => to_unfold(outer).match({
+      Unfold: (init, term, card, step1) =>
+        Nested(
+          add_nr(n, init, term, card, step1),
+          ([nr, a]) => map_raw(
+            (a, k) => `${nr} -= 1; ${k(a)}` as Code<Unit>,
+            addTermination(`${nr} > 0` as Code<boolean>, step(a))
+          )
+        ),
+    }),
   });
 }
 const take = <A>(n: Code<number>) => (stream: StStream<A>) => take_raw(n, stream);
 
 // zips: the hard part
 
-function zip_two_for<A, B, S1, S2>(
-  p1: For<A, S1>,
-  p2: For<B, S2>
-): For<[A, B], [S1, S2]> {
-  return For(
-    (k) => p1.init((s1) => p2.init((s2) => k([s1, s2]))),
-    ([s1, s2]) => `Math.min(${p1.bound(s1)}, ${p2.bound(s2)})` as Code<number>,
-    ([s1, s2], i, k) => p1.index(s1, i, (a1) => p2.index(s2, i, (a2) => k([a1, a2])))
-  )
-}
+// function zip_two_for<A, B, S1, S2>(
+//   p1: For<A, S1>,
+//   p2: For<B, S2>
+// ): For<[A, B], [S1, S2]> {
+//   return For(
+//     (k) => p1.init((s1) => p2.init((s2) => k([s1, s2]))),
+//     ([s1, s2]) => `Math.min(${p1.bound(s1)}, ${p2.bound(s2)})` as Code<number>,
+//     ([s1, s2], i, k) => p1.index(s1, i, (a1) => p2.index(s2, i, (a2) => k([a1, a2])))
+//   )
+// }
 
-function zip_two_unfold<A, B, S1, S2>(
-  p1: Unfold<A, S1>,
-  p2: Unfold<B, S2>
-): Unfold<[A, B], [S1, S2]> {
-  return Unfold(
-    (k) => p1.init((s1) => p2.init((s2) => k([s1, s2]))),
-    ([s1, s2]) => `${p1.term(s1)} && ${p2.term(s2)}` as Code<boolean>,
-    Card.Many,
-    ([s1, s2], k) => p1.step(s1, (a1) => p2.step(s2, (a2) => k([a1, a2])))
-  )
-}
+// function zip_two_unfold<A, B, S1, S2>(
+//   p1: Unfold<A, S1>,
+//   p2: Unfold<B, S2>
+// ): Unfold<[A, B], [S1, S2]> {
+//   return Unfold(
+//     (k) => p1.init((s1) => p2.init((s2) => k([s1, s2]))),
+//     ([s1, s2]) => `${p1.term(s1)} && ${p2.term(s2)}` as Code<boolean>,
+//     Card.Many,
+//     ([s1, s2], k) => p1.step(s1, (a1) => p2.step(s2, (a2) => k([a1, a2])))
+//   )
+// }
 
 // function push_linear<A, B, C, S1, S2>(
 //   p1: Unfold<A, S1>,
