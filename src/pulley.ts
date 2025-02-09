@@ -10,6 +10,7 @@ export {
   flatmap,
   filter,
   take,
+  zipWith,
   // code generation
   embed,
   asRef,

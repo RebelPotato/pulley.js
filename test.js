@@ -9,6 +9,7 @@ import {
   flatmap,
   take,
   unfold,
+  zipWith,
   forEach,
 } from "./dist/pulley.js";
 
@@ -45,7 +46,7 @@ function f(str) {
   return (...args) => {
     const acc = [];
     for (let i = 0; i < len; i++) {
-      if (isVars[i]) acc.push(args[parseInt(parts[i].slice(1))]);
+      if (isVars[i]) acc.push(`(${args[parseInt(parts[i].slice(1))]})`);
       else acc.push(parts[i]);
     }
     return acc.join("");
@@ -54,7 +55,7 @@ function f(str) {
 const pipe = (x, ...fns) => fns.reduce((v, f) => f(v), x);
 
 // testing
-const iota = (n) => unfold((x) => `[${x}, ${x} + 1]`, n);
+const iota = (n) => unfold((x) => `[(${x}), (${x}) + 1]`, n);
 const tests = [
   {
     expect: () => pipe([1, 2, 3], embed, toStream, fold(f(`$0 + $1`), `0`)),
@@ -164,6 +165,77 @@ const tests = [
       ),
     toBe: [114, 114, 216, 114, 216, 114, 216, 216, 216, 120],
   },
+  {
+    expect: () =>
+      pipe(
+        iota(1),
+        zipWith(f(`$0 * $1`))(pipe([1, 2, 3, 4, 5, 6], embed, toStream)),
+        fold(f(`$0 + $1`), `0`)
+      ),
+    toBe: 91,
+  },
+  {
+    expect: () =>
+      pipe(
+        zipWith(f(`[$0, $1]`))(
+          pipe(
+            [1.2, 2.3, 3.4, 4.5, 5.6, 6.7],
+            embed,
+            toStream,
+            take(5),
+            map(f(`Math.floor($0)`)),
+            filter(f(`$0 % 2 === 0`)),
+            map(f(`$0 * $0`))
+          )
+        )(pipe(iota(10), map(f(`$0 * $0`)))),
+        fold(f(`($0.push($1), $0)`), `[]`)
+      ),
+    toBe: [
+      [4, 100],
+      [16, 121],
+    ],
+  },
+  {
+    expect: () =>
+      pipe(
+        zipWith(f(`[$1, $0]`))(pipe(iota(10), map(f(`$0 * $0`))))(
+          pipe(
+            [1.2, 2.3, 3.4, 4.5, 5.6, 6.7],
+            embed,
+            toStream,
+            take(5),
+            map(f(`Math.floor($0)`)),
+            filter(f(`$0 % 2 === 0`)),
+            map(f(`$0 * $0`))
+          )
+        ),
+        fold(f(`($0.push($1), $0)`), `[]`)
+      ),
+    toBe: [
+      [4, 100],
+      [16, 121],
+    ],
+  },
+  {
+    expect: () =>
+      pipe(
+        zipWith(f(`[$0, $1]`))(
+          pipe(
+            [1.2, 2.3, 3.4, 4.5, 5.6, 6.7, 7.8, 8.9],
+            embed,
+            toStream,
+            take(10),
+            map(f(`Math.floor($0)`)),
+            filter(f(`$0 % 2 === 0`)),
+            map(f(`$0 * $0`))
+          )
+        )(
+          pipe(iota(20), filter(f(`$0 % 3 === 0`)), map(f(`$0 * $0`)), take(3))
+        ),
+        fold(f(`($0.push($1), $0)`), `[]`)
+      ),
+    toBe: [],
+  },
 ];
 
 const format = (code) =>
@@ -204,9 +276,10 @@ for (let i = 0; i < tests.length; i++) {
     h("h3", {}, ["Generated"]),
     h("pre", {}, [format(generated)]),
     h("p", {}, [
-      passed ? undefined : `expected: ${expected}, `,
-      `got: ${result}`,
+      passed ? undefined : `expected: ${JSON.stringify(expected)}, `,
+      `got: ${JSON.stringify(result)}`,
     ]),
   ]);
   document.body.appendChild(elem);
 }
+console.log("results", results);

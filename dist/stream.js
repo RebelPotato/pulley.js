@@ -63,10 +63,6 @@ function For(init, bound, index) {
         bound,
         index,
         match: (opts) => opts.For(init, bound, index),
-        // take_raw: (n) => {
-        //   const nbound = (s: S) => `Math.min(${n}-1, ${bound(s)})` as Code<number>;
-        //   return For(init, nbound, index);
-        // }
     };
     return Object.freeze(obj);
 }
@@ -83,7 +79,7 @@ function Unfold(init, term, card, step) {
 // Helper functions
 function toStream(arr) {
     const init = (k) => const_init(arr, k);
-    const bound = (arr) => `${arr}.length - 1`;
+    const bound = (arr) => `(${arr}.length - 1)`;
     const index = (arr, i, k) => {
         const vel = mkVar("el");
         return `const ${vel} = ${arr}[${i}]; ${k(vel)}`;
@@ -92,7 +88,7 @@ function toStream(arr) {
 }
 function unfold(prod, initial) {
     const init = (k) => var_initU(k, prod(initial));
-    const term = (s) => `${s} !== undefined`;
+    const term = (s) => `(${s} !== undefined)`;
     const step = (s, body) => {
         const el = mkVar("el");
         const s1 = mkVar("s1");
@@ -149,13 +145,13 @@ function flatmap_raw(tr, stream) {
 const flatmap = (tr) => (stream) => flatmap_raw(tr, stream);
 function filter(f) {
     return (stream) => {
-        const filter_stream = (a) => Unfold(k => k(a), f, Card.AtMostOne, (a, k) => k(a));
+        const filter_stream = (a) => Unfold((k) => k(a), f, Card.AtMostOne, (a, k) => k(a));
         return flatmap_raw((a) => Linear(filter_stream(a)), stream);
     };
 }
 function to_unfold(prod) {
     return prod.match({
-        For: (init, bound, index) => Unfold((k) => init(var_init0(k)), ([i, s0]) => `${i} <= ${bound(s0)}`, Card.Many, ([i, s0], k) => index(s0, i, (a) => var_inc(i, k(a)))),
+        For: (init, bound, index) => Unfold((k) => init(var_init0(k)), ([i, s0]) => `(${i} <= ${bound(s0)})`, Card.Many, ([i, s0], k) => index(s0, i, (a) => var_inc(i, k(a)))),
         Unfold: () => prod,
     });
 }
@@ -165,14 +161,14 @@ function add_to_producer(newTerm, prod) {
         Unfold: (init, term, card, step) => {
             if (card === Card.AtMostOne)
                 return prod;
-            return Unfold(init, (s) => `${newTerm} && ${term(s)}`, Card.Many, step);
+            return Unfold(init, (s) => `(${newTerm} && ${term(s)})`, Card.Many, step);
         },
     });
 }
-function addTermination(newTerm, stream) {
+function add_termination(newTerm, stream) {
     return stream.match({
         Linear: (prod) => Linear(add_to_producer(newTerm, prod)),
-        Nested: (outer, step) => Nested(add_to_producer(newTerm, outer), (a) => addTermination(newTerm, step(a))),
+        Nested: (outer, step) => Nested(add_to_producer(newTerm, outer), (a) => add_termination(newTerm, step(a))),
     });
 }
 function add_nr(n, init, term, card, step) {
@@ -182,66 +178,80 @@ function add_nr(n, init, term, card, step) {
     });
     return Unfold(ninit, ([nr, s]) => card === Card.AtMostOne
         ? term(s)
-        : `${nr} > 0 && ${term(s)}`, card, ([nr, s], k) => step(s, el => k([nr, el])));
+        : `(${nr} > 0 && ${term(s)})`, card, ([nr, s], k) => step(s, (el) => k([nr, el])));
 }
 function take_raw(n, stream) {
     return stream.match({
         Linear: (prod) => prod.match({
             For: (init, bound, index) => Linear(For(init, (s) => `Math.min(${n}-1, ${bound(s)})`, index)),
-            Unfold: (init, term, card, step) => map_raw(([nr, a], k) => `${nr} -= 1; ${k(a)}`, Linear(add_nr(n, init, term, card, step)))
+            Unfold: (init, term, card, step) => map_raw(([nr, a], k) => `${nr} -= 1; ${k(a)}`, Linear(add_nr(n, init, term, card, step))),
         }),
         Nested: (outer, step) => to_unfold(outer).match({
-            Unfold: (init, term, card, step1) => Nested(add_nr(n, init, term, card, step1), ([nr, a]) => map_raw((a, k) => `${nr} -= 1; ${k(a)}`, addTermination(`${nr} > 0`, step(a)))),
+            Unfold: (init, term, card, step1) => Nested(add_nr(n, init, term, card, step1), ([nr, a]) => map_raw((a, k) => `${nr} -= 1; ${k(a)}`, add_termination(`(${nr} > 0)`, step(a)))),
         }),
     });
 }
 const take = (n) => (stream) => take_raw(n, stream);
 // zips: the hard part
-// function zip_two_for<A, B, S1, S2>(
-//   p1: For<A, S1>,
-//   p2: For<B, S2>
-// ): For<[A, B], [S1, S2]> {
-//   return For(
-//     (k) => p1.init((s1) => p2.init((s2) => k([s1, s2]))),
-//     ([s1, s2]) => `Math.min(${p1.bound(s1)}, ${p2.bound(s2)})` as Code<number>,
-//     ([s1, s2], i, k) => p1.index(s1, i, (a1) => p2.index(s2, i, (a2) => k([a1, a2])))
-//   )
+function zip_producer(prod1, prod2) {
+    return prod1.match({
+        For: (init1, bound1, index1) => prod2.match({
+            For: (init2, bound2, index2) => For((k) => init1((s1) => init2((s2) => k([s1, s2]))), ([s1, s2]) => `Math.min(${bound1(s1)}, ${bound2(s2)})`, ([s1, s2], i, k) => index1(s1, i, (a) => index2(s2, i, (b) => k([a, b])))),
+            Unfold: () => zip_producer(to_unfold(prod1), to_unfold(prod2)),
+        }),
+        Unfold: (init1, term1, card1, step1) => prod2.match({
+            For: () => zip_producer(to_unfold(prod1), to_unfold(prod2)),
+            Unfold: (init2, term2, card2, step2) => Unfold((k) => init1((s1) => init2((s2) => k([s1, s2]))), ([s1, s2]) => `(${term1(s1)} && ${term2(s2)})`, Card.Many, ([s1, s2], k) => step1(s1, (a) => step2(s2, (b) => k([a, b])))),
+        }),
+    });
+}
+function push_linear(prod1, prod2, f) {
+    return prod1.match({
+        Unfold: (init1, term1, card1, step1) => prod2.match({
+            Unfold: (init2, term2, card2, step2) => Nested(Unfold((k) => init1((s1) => init2((s2) => {
+                const term1r = mkVar("term1r");
+                return `let ${term1r} = ${term1(s1)}; ${k([
+                    term1r,
+                    s1,
+                    s2,
+                ])}`;
+            })), ([term1r, s1, s2]) => `((${term1r}) && ${term2(s2)})`, Card.Many, ([term1r, s1, s2], k) => step2(s2, (b) => k([term1r, s1, b]))), ([term1r, s1, b]) => map_raw((c, k) => step1(s1, (a) => `${term1r} = ${term1(s1)}; ${k([a, c])}`), add_termination(`(${term1r})`, f(b)))),
+        }),
+    });
+}
+// function make_linear<A>(stream: StStream<A>): Producer<A> {
+//   return stream.match({
+//     Linear: (prod) => prod,
+//     Nested: (outer, step) => outer.match({
+//       For: () => make_linear(Nested(to_unfold(outer), step)),
+//       Unfold: <S>(
+//         init1: <W>(k: (s: S) => Code<W>) => Code<W>,
+//         term1: (arr: S) => Code<boolean>,
+//         card1: Card,
+//         step1: (arr: S, k: (a: A) => Code<Unit>) => Code<Unit>
+//       ) => {
+//       }
+//     })
+//   })
 // }
-// function zip_two_unfold<A, B, S1, S2>(
-//   p1: Unfold<A, S1>,
-//   p2: Unfold<B, S2>
-// ): Unfold<[A, B], [S1, S2]> {
-//   return Unfold(
-//     (k) => p1.init((s1) => p2.init((s2) => k([s1, s2]))),
-//     ([s1, s2]) => `${p1.term(s1)} && ${p2.term(s2)}` as Code<boolean>,
-//     Card.Many,
-//     ([s1, s2], k) => p1.step(s1, (a1) => p2.step(s2, (a2) => k([a1, a2])))
-//   )
-// }
-// function push_linear<A, B, C, S1, S2>(
-//   p1: Unfold<A, S1>,
-//   p2: Unfold<B, S2>,
-//   f: (x: B) => StStream<C>
-// ): StStream<[A, C]> {
-//   return Nested(
-//     Unfold(
-//       (k) => p1.init(s1 => p2.init(s2 => {
-//         const term1r = mkVar("term1r");
-//         return `let ${term1r} = ${p1.term(s1)}; ${k([term1r, s1, s2])}` as Code<Unit>;
-//       })),
-//       ([term1r, s1, s2]) => `${term1r} && ${p2.term(s2)}` as Code<boolean>,
-//       Card.Many,
-//       ([term1r, s1, s2], k) => p2.step(s2, b => k([term1r, s1, b])),
-//     ),
-//     ([term1r, s1, b]) => map_raw(
-//       (c, k) => p1.step(
-//         s1,
-//         a => `${term1r} = ${p1.term(s1)}; ${k([a, c])}` as Code<Unit>
-//       ),
-//       addTermination(term1r, f(b))
-//     )
-//   )
-// }
+function zip_raw(stream1, stream2) {
+    const err = () => {
+        throw new Error("zip_raw: not implemented yet");
+    };
+    return stream1.match({
+        Linear: (prod1) => stream2.match({
+            Linear: (prod2) => Linear(zip_producer(prod1, prod2)),
+            Nested: (outer2, step2) => push_linear(to_unfold(prod1), to_unfold(outer2), step2),
+        }),
+        Nested: (outer1, step1) => stream2.match({
+            Linear: (prod2) => map_raw(([y, x], k) => k([x, y]), push_linear(to_unfold(prod2), to_unfold(outer1), step1)),
+            Nested: (outer2, step2) => err(),
+        }),
+    });
+}
+function zipWith(f) {
+    return (s1) => (s2) => map_raw(([a, b], k) => k(f(a, b)), zip_raw(s1, s2));
+}
 // code generation
 function embed(x) {
     return JSON.stringify(x);
@@ -262,7 +272,8 @@ function make(n, code) {
     const refs = Count.refs;
     Count = tmp;
     return {
-        refs, body,
+        refs,
+        body,
         run: (...args) => body(refs, ...args),
     };
 }
@@ -272,6 +283,4 @@ toStream, unfold,
 // consumers
 fold, forEach, 
 // transformers
-map, flatmap, filter, take, 
-// code generation
-embed, asRef, make };
+map, flatmap, filter, take, zipWith, embed, asRef, make, };
